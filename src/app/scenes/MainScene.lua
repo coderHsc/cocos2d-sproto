@@ -1,49 +1,15 @@
+cc.utils                = require("framework.cc.utils.init")
+cc.net                  = require("framework.cc.net.init")
+local ByteArray = require("framework.cc.utils.ByteArray")
+
+
+local proto = require "proto"
 local sproto = require "sproto"
-local print_r = require "print_r"
+local bit  = require "bit"
+local host = sproto.new(proto.s2c):host "package"
+local request = host:attach(sproto.new(proto.c2s))
 
-local sp = sproto.parse [[
-.foobar {
-	.nest {
-		a 1 : string
-		b 3 : boolean
-		c 5 : integer
-	}
-	a 0 : string
-	b 1 : integer
-	c 2 : boolean
-	d 3 : nest
 
-	e 4 : *string
-	f 5 : *integer
-	g 6 : *boolean
-	h 7 : *foobar
-}
-]]
-
-local obj = {
-	a = "hello",
-	b = 1000000,
-	c = true,
-	d = {
-		a = "world",
-		-- skip b
-		c = -1,
-	},
-	e = { "ABC", "def" },
-	f = { -3, -2, -1, 0 , 1, 2},
-	g = { true, false, true },
-	h = {
-		{ b = 100 },
-		{},
-		{ b = -100, c= false },
-		{ b = 0, e = { "test" } },
-	},
-}
-
-local code = sp:encode("foobar", obj)
-obj = sp:decode("foobar", code)
-
-print_r(obj)
 
 local MainScene = class("MainScene", function()
     return display.newScene("MainScene")
@@ -51,17 +17,170 @@ end)
 
 function MainScene:ctor()
 --
-	--MainScene:test()
-    cc.ui.UILabel.new({
-            UILabelType = 2, text = "Hello, World", size = 64})
-        :align(display.CENTER, display.cx, display.cy)
-        :addTo(self)
+    --MainScene:test()
+    -- cc.ui.UILabel.new({
+    --         UILabelType = 2, text = "Hello, World", size = 64})
+    --     :align(display.CENTER, display.cx, display.cy)
+    --     :addTo(self)
+
+
+    if not self._socket then
+        self._socket = cc.net.SocketTCP.new("192.168.1.100", 8888, false)
+        self._socket:addEventListener(cc.net.SocketTCP.EVENT_CONNECTED, handler(self, self.onStatus))
+        self._socket:addEventListener(cc.net.SocketTCP.EVENT_CLOSE, handler(self,self.onStatus))
+        self._socket:addEventListener(cc.net.SocketTCP.EVENT_CLOSED, handler(self,self.onStatus))
+        self._socket:addEventListener(cc.net.SocketTCP.EVENT_CONNECT_FAILURE, handler(self,self.onStatus))
+        self._socket:addEventListener(cc.net.SocketTCP.EVENT_DATA, handler(self,self.onData))
+    end
+    self._socket:connect()
 end
 
 function MainScene:onEnter()
 end
 
 function MainScene:onExit()
+end
+
+local last = ""
+
+local function unpack_package(text)
+    local size = #text
+    if size < 2 then
+        return nil, text
+    end
+    local s = text:byte(1) * 256 + text:byte(2)
+    if size < s+2 then
+        return nil, text
+    end
+
+    return text:sub(3,2+s), text:sub(3+s)
+end
+local function recv_package(last)
+    local result
+    result, last = unpack_package(last)
+    if result then
+        return result, last
+    end
+    local r = socket.recv(fd)
+    if not r then
+        return nil, last
+    end
+    if r == "" then
+        error "Server closed"
+    end
+    return unpack_package(last .. r)
+end
+
+local function dispatch_package()
+    while true do
+        local v
+        v, last = recv_package(last)
+        if not v then
+            break
+        end
+        print_package(host:dispatch(v))
+    end
+end
+
+local function print_request(name, args)
+    print("REQUEST", name)
+    if args then
+        for k,v in pairs(args) do
+            print(k,v)
+        end
+    end
+end
+
+local function print_response(session, args)
+    print("RESPONSE", 0)
+    if args then
+        for k,v in pairs(args) do
+            print(k,v)
+        end
+    end
+end
+
+local function print_package(t, ...)
+    if t == "REQUEST" then
+        print_request(...)
+    else
+        assert(t == "RESPONSE")
+        print_response(...)
+    end
+end
+local session = 0
+
+local function extract( n, i, j )
+    local rNum = bit.rshift(n,i)
+    local num = 1
+    local sub = bit.band(rNum,bit.lshift(num,j)-1)
+
+    return bit.tobit(sub)
+end
+
+print(extract(11,1,1))
+print(extract(11,1,2))
+print(extract(11,1,4))
+function MainScene:onData(__event)
+    --local maxLen,version,messageId,msg = self:unpackMessage(__event.data)
+    --dispatch_package()
+    --dump(__event)
+    local data = unpack_package(__event.data)
+    print_package(host:dispatch(data))
+    print("onData",__event.data)
+    -- session = session +1
+    -- local str = request("get",{ what = "hello" }, session)
+    -- local size = #str
+    -- local pack = string.char(extract(size,8,8)) .. string.char(extract(size,0,8)).. str
+   
+    --self._socket:send(pack)
+    session = session + 1
+    local str = request("get",{ what = "hello" }, session)
+    local size = #str
+    local pack = string.char(extract(size,8,8)) .. string.char(extract(size,0,8)) .. str
+    print("pack",pack,size,#pack)
+    --local package = string.pack(">s2", pack)
+    --socket.send(fd, package)
+
+    self._socket:send(pack)
+    --print("socket receive raw data:", maxLen,version,messageId,msg)
+end
+
+--给服务器发送消息
+function MainScene:onStatus(__event)
+    print("onStatus",__event.name)
+    --local socket = require "clientsocket"
+    --local proto = require "proto"
+    --local sproto = require "sproto"
+
+    -- local host = sproto.new(proto.s2c):host "package"
+    -- local request = host:attach(sproto.new(proto.c2s))
+    -- local function send_package(fd, pack)
+    --     local package = string.pack(">s2", pack)
+    --  socket.send(fd, package)
+    -- end
+
+    -- local function send_request(name, args)
+    --     session = session + 1
+    --     local str = request(name, args, session)
+    --     send_package(fd, str)
+    --     print("Request:", session)
+    -- end
+    -- --local fd = self._socket
+    -- send_request("handshake")
+    -- send_request("set", { what = "hello", value = "world" })
+    -- while true do
+    --     dispatch_package()
+    --     local cmd = socket.readstdin()
+    --     if cmd then
+    --         send_request("get", { what = cmd })
+    --     else
+    --         socket.usleep(100)
+    --     end
+    -- end
+
+    -- local message = self:getProcessMessage (1,1003,stringbuffer)
+    -- self._socket:send(message:getPack())
 end
 
 
